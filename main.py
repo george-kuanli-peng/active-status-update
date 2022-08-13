@@ -4,6 +4,7 @@
     Typical usage:
     ./main.py
 """
+import argparse
 import csv
 import datetime
 import sqlite3
@@ -12,11 +13,11 @@ from collections import namedtuple
 from enum import Enum
 from typing import Optional
 
+from utils import db
+
 
 logger = logging.getLogger()
 logger.setLevel(logging.INFO)
-_stats_conn = None
-_mem_conn = None
 
 
 class ActivityStatus(Enum):
@@ -32,24 +33,6 @@ class ActivityStatus(Enum):
 
 ActiveStatusUpdate = namedtuple(
     'ActiveStatusUpdate', ['all', 'diff'])
-
-
-def get_stats_conn() -> sqlite3.Connection:
-    global _stats_conn
-
-    if _stats_conn is None:
-        _stats_conn = sqlite3.connect('../test_db/20220808_receiverdb.sqlite3')
-
-    return _stats_conn
-
-
-def get_member_conn() -> sqlite3.Connection:
-    global _mem_conn
-
-    if _mem_conn is None:
-        _mem_conn = sqlite3.connect('../test_db/20220809_ContactsDB')
-
-    return _mem_conn
 
 
 def get_attendance_encoded(stats_conn: sqlite3.Connection,
@@ -185,12 +168,22 @@ def update_active_status(stats_conn: sqlite3.Connection,
     return ActiveStatusUpdate(ret_all, ret_diff)
 
 
-def _main():
-    stats_conn = get_stats_conn()
-    mem_conn = get_member_conn()
+def _get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--stats_db', type=str,
+                        help='stats db file path')
+    parser.add_argument('--member_db', type=str,
+                        help='contacts (member) db file path')
+    return parser.parse_args()
 
-    attendance = get_attendance(stats_conn)
-    status_update = update_active_status(stats_conn, mem_conn)
+
+def _main():
+    args = _get_args()
+
+    db_mgr = db.DBManager(stats_db=args.stats_db, member_db=args.member_db)
+
+    attendance = get_attendance(db_mgr.stats_db)
+    status_update = update_active_status(db_mgr.stats_db, db_mgr.mem_db)
     with open('result.csv', 'wt', encoding='utf-8', newline='') as fout:
         csv_writer = csv.writer(fout)
         csv_writer.writerow(['church_id', 'name', 'cnt',
@@ -209,8 +202,8 @@ def _main():
             except KeyError:
                 pass
 
-    stats_conn.close()
-    mem_conn.close()
+    db_mgr.stats_db.close()
+    db_mgr.mem_db.close()
 
 
 if __name__ == '__main__':
