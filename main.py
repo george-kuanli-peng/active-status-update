@@ -8,6 +8,7 @@ import argparse
 import csv
 import datetime
 import sqlite3
+import sys
 import logging
 from collections import namedtuple
 from enum import Enum
@@ -16,8 +17,11 @@ from typing import Optional
 from utils import db
 
 
-logger = logging.getLogger()
-logger.setLevel(logging.INFO)
+logging.basicConfig(level=logging.INFO,
+                    format='%(asctime)s:%(levelname)s:%(name)s:%(message)s',
+                    datefmt='%Y-%m-%d %H:%M:%S',
+                    stream=sys.stderr)
+logger = logging.getLogger(__name__)
 
 
 class ActivityStatus(Enum):
@@ -26,9 +30,9 @@ class ActivityStatus(Enum):
     GUEST = 'g'
     DEAD = 'd'
     NO_MORE = 'x'
-    UNKNOWN_1 = 'n'  # TODO
-    UNKNOWN_2 = ''   # TODO
-    UNKNOWN_3 = 'v'  # TODO
+    GUEST_VARIANCE_1 = 'n'
+    GUEST_VARIANCE_2 = ''
+    GUEST_VARIANCE_3 = 'v'
 
 
 ActiveStatusUpdate = namedtuple(
@@ -141,7 +145,6 @@ def get_new_active_status(attendance_cnt: int,
     elif attendance_cnt >= 1:
         return ActivityStatus.OCCASION
     else:
-        # TODO: what if curr_active_status != GUEST
         return ActivityStatus.GUEST
 
 
@@ -165,26 +168,26 @@ def update_active_status(stats_conn: sqlite3.Connection,
                            ' but unfound in member_db',
                            cid)
 
+    if write_db:
+        if ret_diff:
+            cur = mem_conn.cursor()
+            # print([(act[1].value, cid) for cid, act in ret_diff.items()])
+            cur.executemany(
+                'UPDATE imports_person SET presence=? WHERE church_id=?',
+                ((act[1].value, cid) for cid, act in ret_diff.items())
+            )
+            mem_conn.commit()
+            logger.info('%d records updated in member_db', cur.rowcount)
+        else:
+            logger.info('No records need updates in member_db')
+
     return ActiveStatusUpdate(ret_all, ret_diff)
 
 
-def _get_args():
-    parser = argparse.ArgumentParser()
-    parser.add_argument('--stats_db', type=str,
-                        help='stats db file path')
-    parser.add_argument('--member_db', type=str,
-                        help='contacts (member) db file path')
-    return parser.parse_args()
-
-
-def _main():
-    args = _get_args()
-
-    db_mgr = db.DBManager(stats_db=args.stats_db, member_db=args.member_db)
-
-    attendance = get_attendance(db_mgr.stats_db)
-    status_update = update_active_status(db_mgr.stats_db, db_mgr.mem_db)
-    with open('result.csv', 'wt', encoding='utf-8', newline='') as fout:
+def write_active_status_diff(write_file_path: str,
+                             attendance,
+                             status_update: ActiveStatusUpdate):
+    with open(write_file_path, 'wt', encoding='utf-8', newline='') as fout:
         csv_writer = csv.writer(fout)
         csv_writer.writerow(['church_id', 'name', 'cnt',
                              'curr_status', 'new_status', 'diff'])
@@ -201,6 +204,34 @@ def _main():
                                      curr_status, new_status, diff])
             except KeyError:
                 pass
+
+
+def _get_args():
+    parser = argparse.ArgumentParser()
+    parser.add_argument('--stats_db', type=str,
+                        help='stats db file path')
+    parser.add_argument('--member_db', type=str,
+                        help='contacts (member) db file path')
+    parser.add_argument('--write_member_db', action='store_true', default=False,
+                        help='write active status update to member db')
+    parser.add_argument('--status_update_diff', type=str,
+                        help='active status update CSV diff file path')
+    return parser.parse_args()
+
+
+def _main():
+    args = _get_args()
+
+    db_mgr = db.DBManager(stats_db=args.stats_db, member_db=args.member_db)
+
+    attendance = get_attendance(db_mgr.stats_db)
+    status_update = update_active_status(db_mgr.stats_db,
+                                         db_mgr.mem_db,
+                                         write_db=args.write_member_db)
+    if args.status_update_diff:
+        write_active_status_diff(args.status_update_diff,
+                                 attendance,
+                                 status_update)
 
     db_mgr.stats_db.close()
     db_mgr.mem_db.close()
