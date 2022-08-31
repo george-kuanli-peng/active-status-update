@@ -2,7 +2,13 @@
 """Main program for the active status update utility.
 
     Typical usage:
-    ./main.py
+    ./main.py --stats_db $RECEIVER_DB_FILE \
+              --member_db $CONTACTS_DB_FILE \
+              --write_member_db
+
+    To dry-run the program without updating DB, remove --write_member_db
+    To save the update list in CSV, add --status_update_diff=DIFF_CSV_FILE
+    Logging is written to stdout by default.
 """
 import argparse
 import csv
@@ -41,7 +47,35 @@ ActiveStatusUpdate = namedtuple(
 
 def get_attendance_encoded(stats_conn: sqlite3.Connection,
                            church_id: Optional[int] = None,
-                           all_years: bool = False):
+                           all_years: bool = False) -> list:
+    """Gets encoded yearly attendance statistics for members.
+
+    Gets rows from stats_db containing the yearly attendance for members.
+    The encoding scheme is described in <returns>.
+
+    Args:
+      stats_conn: stats_db connection
+      church_id: if provided, only returns the rows matching church_id
+      all_years: if True, returns all rows regardless of year;
+        else (default), only returns the rows for this year and the last year
+
+    Returns:
+      A list containing the fetched rows. Each row is a tuple
+      (church_id, name, year, first_half, last_half).
+
+      first_half is a 32-bit integer with bits (from MSB to LSB) representing
+      the attendance for the 31st, 30th, 29th, ..., 0th week of year.
+
+      last_half is a 32-bit integer with bits (from MSB to LSB) representing
+      the attendance for the 53rd, 52nd, ..., 33rd week of year, and the bits
+      preceding 53rd are all zeros.
+
+      The week number follows Python's %W for the strptime() method,
+      where Monday is considered the first day of week, and all days in a new
+      year preceding the first Monday are considered to be in week 0.
+      Therefore, the week number ranges from 0 to 53.
+      Ref: https://docs.python.org/3/library/datetime.html
+    """
     cnds_query, cnds_val = [], []
     if church_id:
         cnds_query.append('church_id=?')
@@ -75,7 +109,24 @@ def _range_inclusive(start: int, end: int):
 
 def get_attendance(stats_conn: sqlite3.Connection,
                    church_id: Optional[int] = None,
-                   end_date: Optional[datetime.date] = None):
+                   end_date: Optional[datetime.date] = None) -> dict:
+    """Gets the attendance statistics within a year.
+
+    Gets the attendance statistics within a year dating from end_date.
+
+    Args:
+      stats_conn: stats_db connection
+      church_id: if provided, only returns the records matching church_id
+      end_date: the ending date for statistics; today by default
+
+    Returns:
+      A dict mapping a member's church_id to his attendance dict record
+
+      {'church_id': church_id, 'name': name,
+       'cnt': total_attendance_within_a_year,
+       'bmp_end_year': encoded_attendance_bitmap_for_ending_year_in_len_54,
+       'bmp_prv_year': encoded_attendance_bitmap_for_previous_year_in_len_54}
+    """
     if end_date is None:
         end_date = datetime.date.today()
     this_year = datetime.date.today().year
@@ -100,7 +151,7 @@ def get_attendance(stats_conn: sqlite3.Connection,
             att['bmp_prv_year'] = first_half | (last_half << 32)
 
     bmp_mask = [1 << n for n in _range_inclusive(0, 53)]
-    for church_id, att in attendance.items():
+    for _, att in attendance.items():
         bmp_end_year = att['bmp_end_year']
         bmp_prv_year = att['bmp_prv_year']
         att['cnt'] = \
@@ -113,7 +164,17 @@ def get_attendance(stats_conn: sqlite3.Connection,
 
 
 def get_active_status(mem_conn: sqlite3.Connection,
-                      church_id: Optional[int] = None):
+                      church_id: Optional[int] = None) -> dict:
+    """Gets active status from member_db.
+
+    Args:
+      mem_conn: member_db (aka. contacts_db) connection
+      church_id: if provided, only returns the records matching church_id
+
+    Returns:
+      A dict mapping a member's church_id to his active status in tuple
+      (church_id, name, presence)
+    """
     cur = mem_conn.cursor()
     if church_id is None:
         res = cur.execute(
@@ -135,8 +196,9 @@ def get_active_status(mem_conn: sqlite3.Connection,
 
 
 def get_new_active_status(attendance_cnt: int,
-                              curr_active_status: ActivityStatus) \
+                          curr_active_status: ActivityStatus) \
         -> ActivityStatus:
+    """Computes the active status"""
     if curr_active_status in (ActivityStatus.DEAD,
                               ActivityStatus.NO_MORE):
         return curr_active_status
@@ -153,6 +215,21 @@ def update_active_status(stats_conn: sqlite3.Connection,
                          church_id: Optional[int] = None,
                          write_db: bool = False) \
         -> ActiveStatusUpdate:
+    """Updates active status
+
+    Args:
+      stats_conn: stats_db connection
+      mem_conn: member_db (aka. contacts_db) connection
+      church_id: if provided, only updates the record matching church_id
+      write_db: if True, write the updates to member_db;
+        else (default), dry-run only
+
+    Returns:
+      An ActiveStatusUpdate named-tuple,
+      ('all': a dict mapping all church_id to new_activity_status,
+       'diff': a dict mapping affected church_id to
+         (curr_activity_status, new_activity_status))
+    """
     attendance = get_attendance(stats_conn, church_id=church_id)
     active_status = get_active_status(mem_conn, church_id=church_id)
     ret_all, ret_diff = {}, {}
@@ -187,6 +264,16 @@ def update_active_status(stats_conn: sqlite3.Connection,
 def write_active_status_diff(write_file_path: str,
                              attendance,
                              status_update: ActiveStatusUpdate):
+    """Writes activity status changes.
+
+    The change file is in CSV format containing
+    church_id, name, cnt, curr_status, new_status, diff.
+
+    Args:
+      write_file_path: CSV file to write
+      attendance: return value from get_attendance()
+      status_update: return value from update_active_status()
+    """
     with open(write_file_path, 'wt', encoding='utf-8', newline='') as fout:
         csv_writer = csv.writer(fout)
         csv_writer.writerow(['church_id', 'name', 'cnt',
