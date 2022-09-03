@@ -6,9 +6,10 @@
               --member_db $CONTACTS_DB_FILE \
               --write_member_db
 
-    To dry-run the program without updating DB, remove --write_member_db
-    To save the update list in CSV, add --status_update_diff=DIFF_CSV_FILE
-    Logging is written to stdout by default.
+    - To dry-run the program without updating DB, remove --write_member_db
+    - To save the update list in CSV, add --status_update_diff=$DIFF_CSV_FILE
+    - To save the full list in CSV, add --status_update_full=$FULL_CSV_FILE
+    - Logging is written to stdout by default.
 """
 import argparse
 import csv
@@ -264,7 +265,37 @@ def update_active_status(stats_conn: sqlite3.Connection,
 def write_active_status_diff(write_file_path: str,
                              attendance,
                              status_update: ActiveStatusUpdate):
-    """Writes activity status changes.
+    """Writes diff activity status changes.
+
+    The change file is in CSV format containing
+    church_id, name, cnt, curr_status, new_status.
+
+    Args:
+      write_file_path: CSV file to write
+      attendance: return value from get_attendance()
+      status_update: return value from update_active_status()
+    """
+    with open(write_file_path, 'wt', encoding='utf-8', newline='') as fout:
+        csv_writer = csv.writer(fout)
+        csv_writer.writerow(['church_id', 'name', 'cnt',
+                             'curr_status', 'new_status'])
+        for cid, att_diff in status_update.diff.items():
+            try:
+                name = attendance[cid]['name']
+                cnt = attendance[cid]['cnt']
+                curr_status = att_diff[0].name
+                new_status = att_diff[1].name
+
+                csv_writer.writerow([cid, name, cnt,
+                                     curr_status, new_status])
+            except KeyError:
+                pass
+
+
+def write_active_status_full(write_file_path: str,
+                             attendance,
+                             status_update: ActiveStatusUpdate):
+    """Writes full activity status changes.
 
     The change file is in CSV format containing
     church_id, name, cnt, curr_status, new_status, diff.
@@ -302,7 +333,9 @@ def _get_args():
     parser.add_argument('--write_member_db', action='store_true', default=False,
                         help='write active status update to member db')
     parser.add_argument('--status_update_diff', type=str,
-                        help='active status update CSV diff file path')
+                        help='diff active status update CSV file path')
+    parser.add_argument('--status_update_full', type=str,
+                        help='full active status update CSV file path')
     return parser.parse_args()
 
 
@@ -317,6 +350,10 @@ def _main():
                                          write_db=args.write_member_db)
     if args.status_update_diff:
         write_active_status_diff(args.status_update_diff,
+                                 attendance,
+                                 status_update)
+    if args.status_update_full:
+        write_active_status_full(args.status_update_full,
                                  attendance,
                                  status_update)
 

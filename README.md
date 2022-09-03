@@ -13,6 +13,7 @@ Active status update utilities.
               --member_db $CONTACTS_DB_FILE \
               --write_member_db
 
-    To dry-run the program without updating DB, remove --write_member_db
-    To save the update list in CSV, add --status_update_diff=DIFF_CSV_FILE
-    Logging is written to stdout by default.
+    - To dry-run the program without updating DB, remove --write_member_db
+    - To save the update list in CSV, add --status_update_diff=$DIFF_CSV_FILE
+    - To save the full list in CSV, add --status_update_full=$FULL_CSV_FILE
+    - Logging is written to stdout by default.
